@@ -1,1 +1,1 @@
-from gym_private.envs.continuous_cartpole import ContinuousCartPoleEnv
+from gym_extras.envs.continuous_cartpole import ContinuousCartPoleEnv
