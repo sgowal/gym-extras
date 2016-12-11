@@ -92,7 +92,6 @@ class ContinuousCartPoleEnv(gym.Env):
 
     if not done:
       reward = 1.0
-      # Must be centered.
       if self.iteration > TIME_BEFORE_BONUS_ALLOWED:
         reward += _CenteredReward(x, self.target_location, self.reward_sigma)
       self.iteration += 1
@@ -174,4 +173,5 @@ class ContinuousCartPoleEnv(gym.Env):
 
 
 def _CenteredReward(x, mu, sigma):
-  return np.exp(-(x - mu) ** 2. / (2. * sigma ** 2.))
+  # Give negative rewards for being far from the target location.
+  return np.exp(-(x - mu) ** 2. / (2. * sigma ** 2.)) - 1.
