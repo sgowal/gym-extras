@@ -90,16 +90,21 @@ class ContinuousCartPoleEnv(gym.Env):
             or theta < -_FAILURE_ANGLE
             or theta > _FAILURE_ANGLE)
 
+    # Give reward similar to MoJoCo pendulum environments.
+    dist_penalty = 1. * (x - self.target_location) ** 2. + theta ** 2.
+    alive_bonus = 10.
+    r = alive_bonus - dist_penalty
+
     if not done:
-      reward = 1.0
-      if self.iteration > TIME_BEFORE_BONUS_ALLOWED:
-        reward += _CenteredReward(x, self.target_location, self.reward_sigma)
+      reward = r
+      # if self.iteration > TIME_BEFORE_BONUS_ALLOWED:
+      #   reward += _CenteredReward(x, self.target_location, self.reward_sigma)
       self.iteration += 1
 
     # Weird construct.
     elif self.steps_beyond_done is None:
-      self.steps_beyond_done = 0
-      reward = 1.0
+      # self.steps_beyond_done = 0
+      reward = r
     else:
       if self.steps_beyond_done == 0:
           logger.warn('You are calling "step()" even though this environment has already returned done = True. You should always call "reset()" once you receive "done = True" -- any further steps are undefined behavior.')
@@ -173,5 +178,4 @@ class ContinuousCartPoleEnv(gym.Env):
 
 
 def _CenteredReward(x, mu, sigma):
-  # Give negative rewards for being far from the target location.
-  return np.exp(-(x - mu) ** 2. / (2. * sigma ** 2.)) - 1.
+  return np.exp(-(x - mu) ** 2. / (2. * sigma ** 2.))
