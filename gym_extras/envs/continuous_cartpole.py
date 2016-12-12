@@ -90,18 +90,13 @@ class ContinuousCartPoleEnv(gym.Env):
             or theta < -_FAILURE_ANGLE
             or theta > _FAILURE_ANGLE)
 
-    # Give reward similar to MoJoCo pendulum environments.
-    dist_penalty = 1. * (x - self.target_location) ** 2. + theta ** 2.
+    dist_penalty = 1. * np.abs(x - self.target_location) + theta ** 2.
     alive_bonus = 10.
     r = alive_bonus - dist_penalty
 
     if not done:
       reward = r
-      # if self.iteration > TIME_BEFORE_BONUS_ALLOWED:
-      #   reward += _CenteredReward(x, self.target_location, self.reward_sigma)
       self.iteration += 1
-
-    # Weird construct.
     elif self.steps_beyond_done is None:
       # self.steps_beyond_done = 0
       reward = r
