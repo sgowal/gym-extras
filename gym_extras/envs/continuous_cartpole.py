@@ -15,8 +15,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-TIME_BEFORE_BONUS_ALLOWED = 100
-
 # Physics.
 _GRAVITY = 9.8
 _CART_MASS = 1.
@@ -37,7 +35,7 @@ class ContinuousCartPoleEnv(gym.Env):
       'video.frames_per_second': 50
   }
 
-  def __init__(self, target_location=0., reward_sigma=0.3):
+  def __init__(self, target_location=0.):
     self.target_location = target_location
     self.reward_sigma = reward_sigma
 
@@ -96,7 +94,6 @@ class ContinuousCartPoleEnv(gym.Env):
 
     if not done:
       reward = r
-      self.iteration += 1
     elif self.steps_beyond_done is None:
       # self.steps_beyond_done = 0
       reward = r
@@ -111,7 +108,6 @@ class ContinuousCartPoleEnv(gym.Env):
   def _reset(self):
     self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
     self.steps_beyond_done = None
-    self.iteration = 0
     return np.array(self.state)
 
   def _render(self, mode='human', close=False):
@@ -170,7 +166,3 @@ class ContinuousCartPoleEnv(gym.Env):
     self.pole_transform.set_rotation(-x[2])
 
     return self.viewer.render(return_rgb_array=mode == 'rgb_array')
-
-
-def _CenteredReward(x, mu, sigma):
-  return np.exp(-(x - mu) ** 2. / (2. * sigma ** 2.))
