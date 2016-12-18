@@ -95,7 +95,6 @@ class ContinuousCartPoleEnv(gym.Env):
     if not done:
       reward = r
     elif self.steps_beyond_done is None:
-      # self.steps_beyond_done = 0
       reward = r
     else:
       if self.steps_beyond_done == 0:
