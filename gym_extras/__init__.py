@@ -27,6 +27,13 @@ register(
     id='Cart-v0',
     entry_point='gym_extras.envs:CartEnv',
     timestep_limit=50,
-    # reward_threshold=2800.,
+    reward_threshold=-6.,
     kwargs={'target_location': 0.0},
+)
+
+register(
+    id='Choice-Cart-v0',
+    entry_point='gym_extras.envs:ChoiceCartEnv',
+    timestep_limit=50,
+    reward_threshold=-14.,
 )
