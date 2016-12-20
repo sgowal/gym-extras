@@ -53,6 +53,7 @@ class CartReacherEnv(gym.Env):
     return [seed]
 
   def _step(self, action):
+    action = np.clip(action, -1., 1.)
     assert self.action_space.contains(action), '%r (%s) invalid' % (action, type(action))
     force = _MAX_FORCE_MAGNITUDE * action[0]
 
