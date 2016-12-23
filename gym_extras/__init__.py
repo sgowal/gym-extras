@@ -30,6 +30,13 @@ register(
 )
 
 register(
+    id='Private-Cart-v1',
+    entry_point='gym_extras.envs:PrivateCartEnv',
+    timestep_limit=80,
+    kwargs={'discriminative_reward': False},  # For testing. It still trains but does not affect rewards.
+)
+
+register(
     id='Cart-v0',
     entry_point='gym_extras.envs:CartEnv',
     timestep_limit=50,
