@@ -24,6 +24,12 @@ register(
 )
 
 register(
+    id='Private-Cart-v0',
+    entry_point='gym_extras.envs:PrivateCartEnv',
+    timestep_limit=80,
+)
+
+register(
     id='Cart-v0',
     entry_point='gym_extras.envs:CartEnv',
     timestep_limit=50,

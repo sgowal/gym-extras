@@ -3,7 +3,6 @@ Simple cart that needs to reach a target (there is no pole).
 """
 
 import logging
-import math
 import gym
 import gym.spaces
 import gym.utils.seeding
