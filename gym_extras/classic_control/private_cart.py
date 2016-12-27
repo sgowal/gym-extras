@@ -54,14 +54,10 @@ class PrivateCartEnv(gym.Env):
     self.prediction_reward_discount = 1.0
     self.target_reward_discount = 0.02
 
-  def __init__(self, discriminative_reward=True):
+  def __init__(self, apply_discriminative_reward=True):
     self.episode_modulo = -1
-    self.evaluation_run = 0
-    self.discriminative_reward = discriminative_reward
-    # Member that are updated by the manager.
-    self.is_training = True
-    self.restore_checkpoint = False
-    self.output_directory = None
+    self.apply_discriminative_reward = apply_discriminative_reward
+    self.is_training = False
 
     # Regular Gym environment setup with 5 observations.
     # Distance to correct target, distance to other target, speed, episode modulo and current time.
@@ -86,6 +82,20 @@ class PrivateCartEnv(gym.Env):
       tf.initialize_all_variables().run(session=self.session)
     self.session.graph.finalize()
     self.replay_memory = UniformReplayMemory(_REPLAY_MEMORY_SIZE, (_OBSERVATION_SIZE,))
+
+  def Restore(self, checkpoint_directory):
+    checkpoint = tf.train.latest_checkpoint(checkpoint_directory)
+    logger.info('Restoring discriminator from previous checkpoint: %s', checkpoint)
+
+  def Save(self, checkpoint_directory, step):
+    filename = self.saver.save(self.session, os.path.join(self.output_directory, 'discriminator.ckpt'))
+    logger.info('Saving discriminator at %s', filename)
+
+  def SetMode(self, is_training):
+    self.is_training = is_training
+
+  def HasSpecialFunctions(self):
+    return True
 
   def BuildDiscriminatoryNetwork(self):
     with tf.variable_scope('discriminator'):
@@ -166,7 +176,7 @@ class PrivateCartEnv(gym.Env):
     if self.current_iteration <= _ALLOWED_TO_PREDICT_BEFORE_ITERATION:
       self.target_predicted = self.Discriminate(np.array([x, x_dot]))
       # print self.target_predicted
-      if self.discriminative_reward:
+      if self.apply_discriminative_reward:
         # The more certain the prediction the more reward the discriminator gets.
         reward_prediction = float(self.chosen_target_index * 2 - 1) * (self.target_predicted * 2. - 1.)
         reward_prediction = 0 if reward_prediction < 0 else reward_prediction  # Ignore bad prediction.
@@ -188,15 +198,6 @@ class PrivateCartEnv(gym.Env):
   def _reset(self):
     self.ResetEpisode()
     self.episode_modulo = 1. if self.episode_modulo < 0. else -1.
-    if self.restore_checkpoint:
-      checkpoint = tf.train.latest_checkpoint(self.output_directory)
-      logger.info('Restoring discriminator from previous checkpoint: %s', checkpoint)
-      self.restore_checkpoint = False
-    if not self.is_training:
-      if self.evaluation_run % self.spec.trials == 0:
-        filename = self.saver.save(self.session, os.path.join(self.output_directory, 'discriminator.ckpt'), global_step=self.current_training_step)
-        logger.info('Saving discriminator at %s', filename)
-      self.evaluation_run += 1
     # Build first observation and state.
     cart_position = self.np_random.uniform(low=-0.1, high=0.1)
     cart_velocity = self.np_random.uniform(low=-0.01, high=0.01)

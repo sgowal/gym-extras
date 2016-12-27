@@ -1,0 +1,3 @@
+from gym_extras.classic_control.continuous_cartpole import ContinuousCartPoleEnv
+from gym_extras.classic_control.cart_reacher import CartReacherEnv
+from gym_extras.classic_control.private_cart import PrivateCartEnv
