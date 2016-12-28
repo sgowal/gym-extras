@@ -30,12 +30,14 @@ _TRAIN_EVERY_ITERATIONS = 5
 _OBSERVATION_SIZE = 2
 _ALLOWED_TO_PREDICT_BEFORE_ITERATION = 50
 _REPLAY_MEMORY_SIZE = _ALLOWED_TO_PREDICT_BEFORE_ITERATION * 100
-_LAYERS = [400, 300]  # [40, 30]?
+_LAYERS = [40, 30]
+_L2_REGULARIZATION = 1e-2
 _NUM_CLASSES = len(_TARGET_LOCATIONS)
 _LEARNING_RATE = 1e-3
 _DECAY_PREDICTION_REWARD = 0.95  # Reaches 0.1 after 80 iterations.
 _DECAY_TARGET_REWARD = 1.05      # Reaches 50 after 80 iterations.
 _PREDICTION_BONUS = 10.
+_SMOOTH_PREDICTION = 0.95        # Smooth predictions over time.
 
 
 class PrivateCartEnv(gym.Env):
@@ -55,7 +57,7 @@ class PrivateCartEnv(gym.Env):
     self.target_reward_discount = 0.02
 
   def __init__(self, apply_discriminative_reward=True):
-    self.episode_modulo = -1
+    self.episode_number = 0
     self.apply_discriminative_reward = apply_discriminative_reward
     self.is_training = False
 
@@ -88,16 +90,23 @@ class PrivateCartEnv(gym.Env):
     logger.info('Restoring discriminator from previous checkpoint: %s', checkpoint)
 
   def Save(self, checkpoint_directory, step):
-    filename = self.saver.save(self.session, os.path.join(self.output_directory, 'discriminator.ckpt'))
+    filename = self.saver.save(self.session, os.path.join(checkpoint_directory, 'discriminator.ckpt'))
     logger.info('Saving discriminator at %s', filename)
 
-  def SetMode(self, is_training):
+  def SetTrainingMode(self, is_training):
     self.is_training = is_training
+
+  def SetRewardMode(self, apply_discriminative_reward):
+    self.apply_discriminative_reward = apply_discriminative_reward
+
+  def SetEpisodeNumber(self, i):
+    self.episode_number = i
 
   def HasSpecialFunctions(self):
     return True
 
   def BuildDiscriminatoryNetwork(self):
+    l2_loss = 0.
     with tf.variable_scope('discriminator'):
       self.input_observation = tf.placeholder(tf.float32, shape=(None, _OBSERVATION_SIZE))
       previous_size = _OBSERVATION_SIZE
@@ -108,7 +117,9 @@ class PrivateCartEnv(gym.Env):
           initializer = tf.random_uniform_initializer(minval=-1.0 / math.sqrt(previous_size),
                                                       maxval=1.0 / math.sqrt(previous_size))
           w = tf.get_variable('w', (previous_size, layer_size), initializer=initializer)
+          l2_loss += tf.nn.l2_loss(w)
           b = tf.get_variable('b', (layer_size,), initializer=initializer)
+          l2_loss += tf.nn.l2_loss(b)
           previous_input = tf.nn.xw_plus_b(previous_input, w, b)
           previous_input = tf.nn.relu(previous_input)
           previous_size = layer_size
@@ -117,13 +128,15 @@ class PrivateCartEnv(gym.Env):
         initializer = tf.random_uniform_initializer(minval=-1.0 / math.sqrt(previous_size),
                                                     maxval=1.0 / math.sqrt(previous_size))
         w = tf.get_variable('w', (previous_size, _NUM_CLASSES), initializer=initializer)
+        l2_loss += tf.nn.l2_loss(w)
         b = tf.get_variable('b', (_NUM_CLASSES,), initializer=initializer)
+        l2_loss += tf.nn.l2_loss(b)
         logits = tf.nn.xw_plus_b(previous_input, w, b)
         self.prediction = tf.nn.softmax(logits)
       # Loss.
       self.input_labels = tf.placeholder(tf.int32, shape=(None,))
       loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, self.input_labels)
-      self.loss = tf.reduce_mean(loss)
+      self.loss = tf.reduce_mean(loss) + l2_loss * _L2_REGULARIZATION
       # Optimizer.
       optimizer = tf.train.AdamOptimizer(learning_rate=_LEARNING_RATE)
       gradients = optimizer.compute_gradients(self.loss)
@@ -168,19 +181,23 @@ class PrivateCartEnv(gym.Env):
     abs_dist_to_target = np.abs(dist_to_target)
     self.previous_speeds[self.previous_speeds_index] = x_dot
     self.previous_speeds_index = (self.previous_speeds_index + 1) % _NUM_STABLE_SPEED
-    reward = -abs_dist_to_target * self.target_reward_discount - np.square(action).sum()
+    performance_reward = -abs_dist_to_target * self.target_reward_discount - np.square(action).sum()
+    reward = performance_reward
     self.target_reward_discount *= _DECAY_TARGET_REWARD
     done = abs_dist_to_target < 0.05 and np.mean(np.abs(self.previous_speeds)) < 0.01
 
     # Try to discriminate which target was chosen from the current position and velocity.
+    privacy_reward = 0.
     if self.current_iteration <= _ALLOWED_TO_PREDICT_BEFORE_ITERATION:
-      self.target_predicted = self.Discriminate(np.array([x, x_dot]))
+      self.target_predicted = ((1. - _SMOOTH_PREDICTION) * self.Discriminate(np.array([x, x_dot])) +
+                               _SMOOTH_PREDICTION * self.target_predicted)
       # print self.target_predicted
       if self.apply_discriminative_reward:
         # The more certain the prediction the more reward the discriminator gets.
         reward_prediction = float(self.chosen_target_index * 2 - 1) * (self.target_predicted * 2. - 1.)
         reward_prediction = 0 if reward_prediction < 0 else reward_prediction  # Ignore bad prediction.
-        reward -= reward_prediction * _PREDICTION_BONUS * self.prediction_reward_discount
+        privacy_reward = -reward_prediction * _PREDICTION_BONUS * self.prediction_reward_discount
+        reward += privacy_reward
         self.prediction_reward_discount *= _DECAY_PREDICTION_REWARD
 
       # Train discriminator.
@@ -193,11 +210,12 @@ class PrivateCartEnv(gym.Env):
     # Keep track of time.
     time = float(self.current_iteration) / float(self.spec.timestep_limit) * 2. - 1.
     self.current_iteration += 1
-    return np.array([dist_to_target, dist_to_other, x_dot, self.episode_modulo, time]).ravel(), reward, done, {}
+    return (np.array([dist_to_target, dist_to_other, x_dot, self.episode_modulo, time]).ravel(), reward, done,
+            {'performance_reward': performance_reward, 'privacy_reward': privacy_reward})
 
   def _reset(self):
     self.ResetEpisode()
-    self.episode_modulo = 1. if self.episode_modulo < 0. else -1.
+    self.episode_modulo = 1. if self.episode_number % 2 == 0. else -1.
     # Build first observation and state.
     cart_position = self.np_random.uniform(low=-0.1, high=0.1)
     cart_velocity = self.np_random.uniform(low=-0.01, high=0.01)
