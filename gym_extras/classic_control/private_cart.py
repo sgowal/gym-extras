@@ -29,10 +29,12 @@ _FRICTION = 0.1
 _SWITCH_TIME = 40
 _SWITCH_PRIVACY_SLOPE = 0.2
 _SWITCH_PERFORMANCE_SLOPE = 0.1
-_MIN_FACTOR = .1
-_MAX_FACTOR = 1.
-_PRIVACY_REWARD_FACTOR = lambda x: _MAX_FACTOR - 1. / (1. + np.e ** (-(_SWITCH_PRIVACY_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_FACTOR - _MIN_FACTOR)
-_PERFORMANCE_REWARD_FACTOR = lambda x: _MIN_FACTOR + 1. / (1. + np.e ** (-(_SWITCH_PERFORMANCE_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_FACTOR - _MIN_FACTOR)
+_MIN_PRIVACY_FACTOR = 0.
+_MAX_PRIVACY_FACTOR = 1.
+_MIN_PERFORMANCE_FACTOR = .1
+_MAX_PERFORMANCE_FACTOR = 1.
+_PRIVACY_REWARD_FACTOR = lambda x: _MAX_PRIVACY_FACTOR - 1. / (1. + np.e ** (-(_SWITCH_PRIVACY_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_PRIVACY_FACTOR - _MIN_PRIVACY_FACTOR)
+_PERFORMANCE_REWARD_FACTOR = lambda x: _MIN_PERFORMANCE_FACTOR + 1. / (1. + np.e ** (-(_SWITCH_PERFORMANCE_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_PERFORMANCE_FACTOR - _MIN_PERFORMANCE_FACTOR)
 _PRIVACY_SMOOTHING = 0.2  # Smooth predictions over time.
 _PRIVACY_MULTIPLIER = 1.
 _PERFORMANCE_MULTIPLIER = 1.
@@ -41,14 +43,14 @@ _MOTION_MULTIPLIER = 1.
 # Discrimatory network.
 _BATCH_SIZE = 64
 _TRAIN_EVERY_ITERATIONS = 1
-_ADD_TO_REPLAY_MEMORY_WHEN_WEIGHT_LARGER = 0.1 * (_MAX_FACTOR - _MIN_FACTOR) + _MIN_FACTOR
+_ADD_TO_REPLAY_MEMORY_WHEN_WEIGHT_LARGER = 0.1 * (_MAX_PRIVACY_FACTOR - _MIN_PRIVACY_FACTOR) + _MIN_PRIVACY_FACTOR
 _REPLAY_MEMORY_SIZE = _SWITCH_TIME * 20
 _SET_ALL_WEIGHTS_TO_ONE = True
 
 _OBSERVATION_SIZE = 2
 _LAYERS = [10]  # [400, 300]
 _L2_REGULARIZATION = 1e-2
-_TAU = 0.1  # 1e-3
+_TAU = 1e-2  # 0.1  # 1e-3
 _NUM_CLASSES = len(_TARGET_LOCATIONS)
 _LEARNING_RATE = 1e-2
 
@@ -109,7 +111,7 @@ class PrivateCartEnv(gym.Env):
   def SetRewardMode(self, apply_discriminative_reward):
     self.apply_discriminative_reward = apply_discriminative_reward
 
-  def HasSpecialFunctions(self):
+  def IsPrivate(self):
     return True
 
   def CreateModel(self):
@@ -233,12 +235,12 @@ class PrivateCartEnv(gym.Env):
     if current_privacy_weight >= _ADD_TO_REPLAY_MEMORY_WHEN_WEIGHT_LARGER:
       self.target_predicted = ((1. - _PRIVACY_SMOOTHING) * self.Discriminate(np.array([x, x_dot])) +
                                _PRIVACY_SMOOTHING * self.target_predicted)
-      # print self.target_predicted
+
+      # Maximize entropy.
+      p = np.clip(self.target_predicted, 0.01, 0.99)  # Avoid numerical imprecision.
+      entropy_prediction = - p * np.log2(p) - (1 - p) * np.log2(1 - p)
+      privacy_reward = entropy_prediction * _PRIVACY_MULTIPLIER * current_privacy_weight
       if self.apply_discriminative_reward:
-        # Maximize entropy.
-        p = np.clip(self.target_predicted, 0.01, 0.99)  # Avoid numerical imprecision.
-        entropy_prediction = - p * np.log2(p) - (1 - p) * np.log2(1 - p)
-        privacy_reward = entropy_prediction * _PRIVACY_MULTIPLIER * current_privacy_weight
         reward += privacy_reward
 
       # Train discriminator.
