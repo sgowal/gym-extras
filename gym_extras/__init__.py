@@ -31,13 +31,6 @@ register(
     timestep_limit=80,
 )
 
-register(
-    id='Private-Cart-v1',
-    entry_point='gym_extras.classic_control:PrivateCartEnv',
-    timestep_limit=80,
-    kwargs={'apply_discriminative_reward': False},  # For testing. It still trains but does not affect rewards.
-)
-
 # MuJoCo.
 
 register(

@@ -5,9 +5,9 @@ The environment also has a discriminatory network that tries to identity to whic
 
 import logging
 import gym
+from gym.envs.classic_control import rendering
 import gym.spaces
 import gym.utils.seeding
-from gym.envs.classic_control import rendering
 import math
 import numpy as np
 import os
@@ -25,34 +25,13 @@ _NUM_STABLE_SPEED = 5
 _TARGET_LOCATIONS = [-0.8, 0.8]
 _FRICTION = 0.1
 
-# Reward schedule.
-_SWITCH_TIME = 40
-_SWITCH_PRIVACY_SLOPE = 0.2
-_SWITCH_PERFORMANCE_SLOPE = 0.1
-_MIN_PRIVACY_FACTOR = 0.
-_MAX_PRIVACY_FACTOR = 1.
-_MIN_PERFORMANCE_FACTOR = .1
-_MAX_PERFORMANCE_FACTOR = 1.
-_PRIVACY_REWARD_FACTOR = lambda x: _MAX_PRIVACY_FACTOR - 1. / (1. + np.e ** (-(_SWITCH_PRIVACY_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_PRIVACY_FACTOR - _MIN_PRIVACY_FACTOR)
-_PERFORMANCE_REWARD_FACTOR = lambda x: _MIN_PERFORMANCE_FACTOR + 1. / (1. + np.e ** (-(_SWITCH_PERFORMANCE_SLOPE * (x - _SWITCH_TIME)))) * (_MAX_PERFORMANCE_FACTOR - _MIN_PERFORMANCE_FACTOR)
-_PRIVACY_SMOOTHING = 0.2  # Smooth predictions over time.
-_PRIVACY_MULTIPLIER = 1.
-_PERFORMANCE_MULTIPLIER = 1.
+# Give separate reward for motion actions.
 _MOTION_MULTIPLIER = 1.
 
 # Discrimatory network.
-_BATCH_SIZE = 64
-_TRAIN_EVERY_ITERATIONS = 1
-_ADD_TO_REPLAY_MEMORY_WHEN_WEIGHT_LARGER = 0.1 * (_MAX_PRIVACY_FACTOR - _MIN_PRIVACY_FACTOR) + _MIN_PRIVACY_FACTOR
-_REPLAY_MEMORY_SIZE = _SWITCH_TIME * 20
-_SET_ALL_WEIGHTS_TO_ONE = True
-
-_OBSERVATION_SIZE = 2
-_LAYERS = [10]  # [400, 300]
-_L2_REGULARIZATION = 1e-2
-_TAU = 1e-2  # 0.1  # 1e-3
+_OBSERVATION_SIZE = 2  # Position and speed.
+_DEFAULT_LAYERS = [10]  # Small default network to avoid overfitting.
 _NUM_CLASSES = len(_TARGET_LOCATIONS)
-_LEARNING_RATE = 1e-2
 
 
 class PrivateCartEnv(gym.Env):
@@ -61,16 +40,7 @@ class PrivateCartEnv(gym.Env):
       'video.frames_per_second': 50
   }
 
-  def ResetEpisode(self):
-    self.previous_speeds = np.ones(_NUM_STABLE_SPEED)
-    self.previous_speeds_index = 0
-    self.current_iteration = 1
-    self.target_predicted = 0.5  # 0 means target 0, 1 means target 1.
-    self.chosen_target_index = self.np_random.randint(2)
-    self.episode_modulo = self.np_random.rand() * 2. - 1.
-
-  def __init__(self, apply_discriminative_reward=True):
-    self.apply_discriminative_reward = apply_discriminative_reward
+  def __init__(self):
     self.is_training = False
 
     # Regular Gym environment setup with 5 observations.
@@ -88,14 +58,18 @@ class PrivateCartEnv(gym.Env):
     self.viewer = None
     self._configure()
 
+  def SetOptions(self, options):
+    self.options = options
+    if not self.options.layer_size:
+      self.options.layer_size.extend(_DEFAULT_LAYERS)
     # Discriminatory network.
     self.session = tf.Session(graph=tf.Graph())
     with self.session.graph.as_default():
-      self.CreateModel()
+      self._CreateModel()
       self.saver = tf.train.Saver(max_to_keep=1)
       tf.initialize_all_variables().run(session=self.session)
     self.session.graph.finalize()
-    self.replay_memory = UniformReplayMemory(_REPLAY_MEMORY_SIZE, (_OBSERVATION_SIZE,))
+    self.replay_memory = UniformReplayMemory(self.options.replay_memory_size, (_OBSERVATION_SIZE,))
 
   def Restore(self, checkpoint_directory):
     checkpoint = tf.train.latest_checkpoint(checkpoint_directory)
@@ -108,25 +82,31 @@ class PrivateCartEnv(gym.Env):
   def SetTrainingMode(self, is_training):
     self.is_training = is_training
 
-  def SetRewardMode(self, apply_discriminative_reward):
-    self.apply_discriminative_reward = apply_discriminative_reward
-
   def IsPrivate(self):
     return True
 
-  def CreateModel(self):
-    parameters = self.DiscriminatorParameters()
-    parameters_target, update_target = PropagateToTargetNetwork(parameters, 1. - _TAU)
+  def GetState(self):
+    return np.array(self.state)
+
+  def GetChosenTarget(self):
+    return self.chosen_target_index
+
+  def TargetLabels(self):
+    return ('Left', 'Right')
+
+  def _CreateModel(self):
+    parameters = self._DiscriminatorParameters()
+    parameters_target, update_target = _PropagateToTargetNetwork(parameters, 1. - self.options.tau)
 
     self.input_observation = tf.placeholder(tf.float32, shape=(None, _OBSERVATION_SIZE))
-    logits = self.DiscriminatorNetwork(self.input_observation, parameters)
+    logits = self._DiscriminatorNetwork(self.input_observation, parameters)
 
     # Train.
     self.input_labels = tf.placeholder(tf.int32, shape=(None,))
     self.input_weights = tf.placeholder(tf.float32, shape=(None,))
     self.loss = tf.reduce_mean(self.input_weights * tf.nn.sparse_softmax_cross_entropy_with_logits(logits, self.input_labels))
-    self.loss += tf.add_n([_L2_REGULARIZATION * tf.nn.l2_loss(p) for p in parameters])
-    optimizer = tf.train.AdamOptimizer(learning_rate=_LEARNING_RATE)
+    self.loss += tf.add_n([self.options.weight_decay * tf.nn.l2_loss(p) for p in parameters])
+    optimizer = tf.train.AdamOptimizer(learning_rate=self.options.learning_rate)
     gradients = optimizer.compute_gradients(self.loss)
     train_op = optimizer.apply_gradients(gradients)
     with tf.control_dependencies([train_op]):
@@ -134,15 +114,15 @@ class PrivateCartEnv(gym.Env):
 
     # Predict (use target network).
     self.single_input_observation = tf.placeholder(tf.float32, shape=(1, _OBSERVATION_SIZE))
-    logits = self.DiscriminatorNetwork(self.single_input_observation, parameters_target)
+    logits = self._DiscriminatorNetwork(self.single_input_observation, parameters_target)
     self.prediction = tf.nn.softmax(logits)
 
-  def DiscriminatorParameters(self):
+  def _DiscriminatorParameters(self):
     params = []
     with tf.variable_scope('discriminator'):
       previous_size = _OBSERVATION_SIZE
       # Layers.
-      for i, layer_size in enumerate(_LAYERS):
+      for i, layer_size in enumerate(self.options.layer_size):
         with tf.variable_scope('layer_%d' % i):
           initializer = tf.random_uniform_initializer(minval=-1.0 / math.sqrt(previous_size),
                                                       maxval=1.0 / math.sqrt(previous_size))
@@ -159,12 +139,12 @@ class PrivateCartEnv(gym.Env):
         params.extend([w, b])
     return params
 
-  def DiscriminatorNetwork(self, observation, params):
+  def _DiscriminatorNetwork(self, observation, params):
     index = 0
     with tf.variable_scope('discriminator'):
       previous_input = observation
       # Layers.
-      for i, layer_size in enumerate(_LAYERS):
+      for i, layer_size in enumerate(self.options.layer_size):
         with tf.variable_scope('layer_%d' % i):
           w = params[index]
           b = params[index + 1]
@@ -179,20 +159,28 @@ class PrivateCartEnv(gym.Env):
         logits = tf.nn.xw_plus_b(previous_input, w, b)
         return logits
 
-  def TrainDiscriminator(self, observations, labels, weights):
+  def _TrainDiscriminator(self, observations, labels, weights):
     self.session.run(self.train_op, {self.input_observation: observations, self.input_labels: labels, self.input_weights: weights})
 
-  def Discriminate(self, observation):
+  def _Discriminate(self, observation):
     observation = np.expand_dims(observation, axis=0)
     prediction = self.session.run(self.prediction, {self.single_input_observation: observation})
     prediction = prediction[0, ...]
     return prediction[1]
 
-  def GetState(self):
-    return np.array(self.state)
+  def _ResetEpisode(self):
+    self.previous_speeds = np.ones(_NUM_STABLE_SPEED)
+    self.previous_speeds_index = 0
+    self.current_iteration = 1
+    self.target_predicted = 0.5  # 0 means target 0, 1 means target 1.
+    self.chosen_target_index = self.np_random.randint(2)
+    self.episode_modulo = self.np_random.rand() * 2. - 1.
 
-  def GetChosenTarget(self):
-    return self.chosen_target_index
+  def _GetPrivacyRewardFactor(self, x):
+    return self.options.switch_privacy_max - 1. / (1. + np.e ** (-(self.options.switch_privacy_slope * (x - self.options.switch_timestep)))) * (self.options.switch_privacy_max - self.options.switch_privacy_min)
+
+  def _GetPerformanceRewardFactor(self, x):
+    return self.options.switch_performance_min + 1. / (1. + np.e ** (-(self.options.switch_performance_slope * (x - self.options.switch_timestep)))) * (self.options.switch_performance_max - self.options.switch_performance_min)
 
   def _configure(self, display=None):
     self.display = display
@@ -223,32 +211,32 @@ class PrivateCartEnv(gym.Env):
     abs_dist_to_target = np.abs(dist_to_target)
     self.previous_speeds[self.previous_speeds_index] = x_dot
     self.previous_speeds_index = (self.previous_speeds_index + 1) % _NUM_STABLE_SPEED
-    current_performance_weight = _PERFORMANCE_REWARD_FACTOR(self.current_iteration)
-    performance_reward = -abs_dist_to_target * current_performance_weight * _PERFORMANCE_MULTIPLIER
-    performance_reward -= np.square(action).sum() * _MOTION_MULTIPLIER
+    current_performance_weight = self._GetPerformanceRewardFactor(self.current_iteration)
+    performance_reward = -abs_dist_to_target * current_performance_weight * self.options.performance_multiplier
+    performance_reward -= np.square(action).sum() * _MOTION_MULTIPLIER * current_performance_weight * self.options.performance_multiplier
     reward = performance_reward
     done = abs_dist_to_target < 0.05 and np.mean(np.abs(self.previous_speeds)) < 0.01
 
     # Try to discriminate which target was chosen from the current position and velocity.
     privacy_reward = 0.
-    current_privacy_weight = _PRIVACY_REWARD_FACTOR(self.current_iteration)
-    if current_privacy_weight >= _ADD_TO_REPLAY_MEMORY_WHEN_WEIGHT_LARGER:
-      self.target_predicted = ((1. - _PRIVACY_SMOOTHING) * self.Discriminate(np.array([x, x_dot])) +
-                               _PRIVACY_SMOOTHING * self.target_predicted)
+    if self.current_iteration <= self.options.add_to_replay_memory_until_timestep:
+      self.target_predicted = ((1. - self.options.privacy_smoothing_decay) * self._Discriminate(np.array([x, x_dot])) +
+                               self.options.privacy_smoothing_decay * self.target_predicted)
 
       # Maximize entropy.
+      current_privacy_weight = self._GetPrivacyRewardFactor(self.current_iteration)
       p = np.clip(self.target_predicted, 0.01, 0.99)  # Avoid numerical imprecision.
       entropy_prediction = - p * np.log2(p) - (1 - p) * np.log2(1 - p)
-      privacy_reward = entropy_prediction * _PRIVACY_MULTIPLIER * current_privacy_weight
-      if self.apply_discriminative_reward:
+      privacy_reward = entropy_prediction * self.options.privacy_multiplier * current_privacy_weight
+      if self.options.apply_reward:
         reward += privacy_reward
 
       # Train discriminator.
       if self.is_training:
-        self.replay_memory.Add(np.array([x, x_dot]), self.chosen_target_index, 1. if _SET_ALL_WEIGHTS_TO_ONE else current_privacy_weight)
-        if self.current_iteration % _TRAIN_EVERY_ITERATIONS == 0 and len(self.replay_memory) >= _BATCH_SIZE:
-          observations, labels, weights = self.replay_memory.Sample(_BATCH_SIZE)
-          self.TrainDiscriminator(observations, labels, weights)
+        self.replay_memory.Add(np.array([x, x_dot]), self.chosen_target_index, 1. if self.options.use_uniform_weights else current_privacy_weight)
+        if self.current_iteration % self.options.train_every_n_timesteps == 0 and len(self.replay_memory) >= self.options.batch_size and len(self.replay_memory) >= self.options.warmup_timesteps:
+          observations, labels, weights = self.replay_memory.Sample(self.options.batch_size)
+          self._TrainDiscriminator(observations, labels, weights)
 
     # Keep track of time.
     time = float(self.current_iteration) / float(self.spec.timestep_limit) * 2. - 1.
@@ -257,7 +245,7 @@ class PrivateCartEnv(gym.Env):
             {'performance_reward': performance_reward, 'privacy_reward': privacy_reward})
 
   def _reset(self):
-    self.ResetEpisode()
+    self._ResetEpisode()
     # Build first observation and state.
     cart_position = self.np_random.uniform(low=-0.1, high=0.1)
     cart_velocity = self.np_random.uniform(low=-0.01, high=0.01)
@@ -323,7 +311,7 @@ class PrivateCartEnv(gym.Env):
     return self.viewer.render(return_rgb_array=mode == 'rgb_array')
 
 
-def PropagateToTargetNetwork(params, decay=0.99, name='moving_average'):
+def _PropagateToTargetNetwork(params, decay=0.99, name='moving_average'):
     ema = tf.train.ExponentialMovingAverage(decay=decay, name=name)
     op = ema.apply(params)
     target_params = [ema.average(p) for p in params]
