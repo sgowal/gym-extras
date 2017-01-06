@@ -177,10 +177,10 @@ class PrivateCartEnv(gym.Env):
     self.episode_modulo = self.np_random.rand() * 2. - 1.
 
   def _GetPrivacyRewardFactor(self, x):
-    return self.options.switch_privacy_max - 1. / (1. + np.e ** (-(self.options.switch_privacy_slope * (x - self.options.switch_timestep)))) * (self.options.switch_privacy_max - self.options.switch_privacy_min)
+    return self.options.switch_privacy_max - 1. / (1. + np.e ** (-(self.options.switch_privacy_slope * (x - self.options.switch_privacy_timestep)))) * (self.options.switch_privacy_max - self.options.switch_privacy_min)
 
   def _GetPerformanceRewardFactor(self, x):
-    return self.options.switch_performance_min + 1. / (1. + np.e ** (-(self.options.switch_performance_slope * (x - self.options.switch_timestep)))) * (self.options.switch_performance_max - self.options.switch_performance_min)
+    return self.options.switch_performance_min + 1. / (1. + np.e ** (-(self.options.switch_performance_slope * (x - self.options.switch_performance_timestep)))) * (self.options.switch_performance_max - self.options.switch_performance_min)
 
   def _configure(self, display=None):
     self.display = display
