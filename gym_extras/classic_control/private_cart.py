@@ -25,9 +25,6 @@ _NUM_STABLE_SPEED = 5
 _TARGET_LOCATIONS = [-0.8, 0.8]
 _FRICTION = 0.1
 
-# Give separate reward for motion actions.
-_MOTION_MULTIPLIER = 1.
-
 # Discrimatory network.
 _OBSERVATION_SIZE = 2  # Position and speed.
 _DEFAULT_LAYERS = [10]  # Small default network to avoid overfitting.
@@ -44,10 +41,10 @@ class PrivateCartEnv(gym.Env):
     self.is_training = False
 
     # Regular Gym environment setup with 5 observations.
-    # Distance to correct target, distance to other target, speed, episode modulo and current time.
+    # Distance to correct target, distance to other target, speed and current time.
     high = np.array([
         np.finfo(np.float32).max, np.finfo(np.float32).max,
-        np.finfo(np.float32).max, 1., 1.,
+        np.finfo(np.float32).max, 1.,
     ])
     self.observation_space = gym.spaces.Box(-high, high)
     self.action_space = gym.spaces.Box(-1, +1, (1,))  # Left-right.
@@ -169,12 +166,10 @@ class PrivateCartEnv(gym.Env):
     return prediction[1]
 
   def _ResetEpisode(self):
-    self.previous_speeds = np.ones(_NUM_STABLE_SPEED)
-    self.previous_speeds_index = 0
     self.current_iteration = 1
     self.target_predicted = 0.5  # 0 means target 0, 1 means target 1.
+    # 0 means go left, 1 means deceptive left but go right.
     self.chosen_target_index = self.np_random.randint(2)
-    self.episode_modulo = self.np_random.rand() * 2. - 1.
 
   def _GetPrivacyRewardFactor(self, x):
     return self.options.switch_privacy_max - 1. / (1. + np.e ** (-(self.options.switch_privacy_slope * (x - self.options.switch_privacy_timestep)))) * (self.options.switch_privacy_max - self.options.switch_privacy_min)
@@ -209,13 +204,14 @@ class PrivateCartEnv(gym.Env):
 
     # Compute basic reward.
     abs_dist_to_target = np.abs(dist_to_target)
-    self.previous_speeds[self.previous_speeds_index] = x_dot
-    self.previous_speeds_index = (self.previous_speeds_index + 1) % _NUM_STABLE_SPEED
-    current_performance_weight = self._GetPerformanceRewardFactor(self.current_iteration)
-    performance_reward = -abs_dist_to_target * current_performance_weight * self.options.performance_multiplier
-    performance_reward -= np.square(action).sum() * _MOTION_MULTIPLIER * current_performance_weight * self.options.performance_multiplier
+    performance_reward = -abs_dist_to_target * self.options.performance_multiplier
+    if self.chosen_target_index == 1:  # Deceptive performance.
+      current_performance_weight = self._GetPerformanceRewardFactor(self.current_iteration)
+      performance_reward *= current_performance_weight
+    # Motion reward.
+    performance_reward -= np.square(action).sum() * self.options.action_multiplier
     reward = performance_reward
-    done = abs_dist_to_target < 0.05 and np.mean(np.abs(self.previous_speeds)) < 0.01
+    done = False
 
     # Try to discriminate which target was chosen from the current position and velocity.
     privacy_reward = 0.
@@ -228,7 +224,7 @@ class PrivateCartEnv(gym.Env):
       p = np.clip(self.target_predicted, 0.01, 0.99)  # Avoid numerical imprecision.
       entropy_prediction = - p * np.log2(p) - (1 - p) * np.log2(1 - p)
       privacy_reward = entropy_prediction * self.options.privacy_multiplier * current_privacy_weight
-      if self.options.apply_reward:
+      if self.options.apply_reward and self.chosen_target_index == 1:
         reward += privacy_reward
 
       # Train discriminator.
@@ -241,7 +237,7 @@ class PrivateCartEnv(gym.Env):
     # Keep track of time.
     time = float(self.current_iteration) / float(self.spec.timestep_limit) * 2. - 1.
     self.current_iteration += 1
-    return (np.array([dist_to_target, dist_to_other, x_dot, self.episode_modulo, time]).ravel(), reward, done,
+    return (np.array([dist_to_target, dist_to_other, x_dot, time]).ravel(), reward, done,
             {'performance_reward': performance_reward, 'privacy_reward': privacy_reward})
 
   def _reset(self):
@@ -252,7 +248,7 @@ class PrivateCartEnv(gym.Env):
     dist_to_target = cart_position - _TARGET_LOCATIONS[self.chosen_target_index]
     dist_to_other = cart_position - _TARGET_LOCATIONS[1 - self.chosen_target_index]
     self.state = (cart_position, cart_velocity)
-    return np.array([dist_to_target, dist_to_other, cart_velocity, self.episode_modulo, -1.]).ravel()
+    return np.array([dist_to_target, dist_to_other, cart_velocity, -1.]).ravel()
 
   def _render(self, mode='human', close=False):
     if close:
